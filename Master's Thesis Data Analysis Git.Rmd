@@ -1,0 +1,1502 @@
+---
+title: "Master's Thesis Data Analysis"
+author: "Ashna"
+date: "2024-09-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+setwd("~/Desktop/Columbia/Master's Thesis")
+```
+
+```{r Packages}
+library(base)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(tidyselect)
+library(ggplot2)
+library(data.table)
+library(stringr)
+library(corrplot)
+library(sf)
+#install.packages("spdep")
+#install.packages("spatialreg")
+library(spdep)
+library(spatialreg)
+library(car)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(rempsyc)
+library(flextable)
+library(broom)
+library(broom.mixed)
+library(broom.helpers)
+library(report)
+library(effectsize)
+library(gtsummary)
+library(gt)
+library(sjPlot)
+library(officer)
+library(extrafont)
+#library(matrix)
+```
+
+```{r Continuum Codes}
+# USDA 2013 county urban-rural continuum codes
+dac2013 <- read.csv("Department of Agriculture/ruralurbancodes2013.csv")
+head(dac2013)
+```
+
+```{r 2016 Census Population Data}
+# Census Bureau 2016 population & demographic data
+cenpop2016 <- read.csv("~/Desktop/Columbia/Master's Thesis/Census Data/Demographics/ACSDP5Y2016.DP05_2024-10-04T100043/ACSDP5Y2016.DP05-Data.csv")
+# Make row 1 the headers
+new_headers <- as.character(cenpop2016[1, ])
+cenpop2016 <- cenpop2016[-1, ]
+names(cenpop2016) <- new_headers
+#head(cenpop2016)
+```
+
+```{r 2020 Census Population Data}
+# Census Bureau 2020 population & demographic data
+cenpop2020 <- read.csv("~/Desktop/Columbia/Master's Thesis/Census Data/Demographics/ACSDP5Y2020.DP05_2024-10-04T100447/ACSDP5Y2020.DP05-Data.csv")
+# Make row 1 the headers
+new_headers1 <- as.character(cenpop2020[1, ])
+cenpop2020 <- cenpop2020[-1, ]
+names(cenpop2020) <- new_headers1
+# stringsAsFactors = FALSE, check.names = FALSE
+#head(cenpop2020)
+```
+
+```{r Clean 2016 Census Data}
+# Clean census data by removing the percent and margin of error columns
+#names(cenpop2016) <- make.names(names(cenpop2016), unique = TRUE)
+pop2016 <- cenpop2016[, !duplicated(names(cenpop2016))]
+# Check duplicate columns
+#names(pop2016)[duplicated(names(pop2016))]
+
+# Now remove columns containing "Margin of Error" or "Percent"
+pop2016 <- pop2016 %>%
+  select(-contains(c('Percent', 'Margin of Error', "Margin.of.Error")))
+
+pop2016 <- pop2016[, !names(pop2016) %in% "Estimate!!RACE!!Total population"]
+#pop2016 <- pop2016[, !names(pop2016) %in% "Total population!!One race"]
+
+
+# Clean column names
+pop2016 <- pop2016 %>%
+  rename_with(
+    ~ gsub("Estimate!!SEX AND AGE!!", "", .x),
+    starts_with("Estimate!!SEX AND AGE!!")) %>%
+  rename_with(
+    ~ gsub("Estimate!!RACE!!", "", .x),
+    starts_with("Estimate!!RACE!!")) #%>%
+  #rename_with(
+    #~ gsub("Total population!!", "", .x),
+    #starts_with("Total population!!"))
+
+pop2016 <- pop2016 %>%
+  mutate(Geography = str_remove(Geography, "0500000US"))
+
+pop2016$Geography <- as.numeric(sub("^0", "", as.character(pop2016$Geography)))
+
+pop2016 <- pop2016 %>%
+  rename("county_fips" = "Geography", "county_name" = "Geographic Area Name")
+
+cen2016 <- pop2016 %>%
+  select("county_fips", "county_name", "Total population", "One race!!White", "One race!!Black or African American", "Estimate!!HISPANIC OR LATINO AND RACE!!Total population!!Hispanic or Latino (of any race)")
+
+cen2016 <- cen2016 %>%
+  rename("pop_total" = "Total population", "pop_white" = "One race!!White", "pop_black" = "One race!!Black or African American", "pop_hispanic" = "Estimate!!HISPANIC OR LATINO AND RACE!!Total population!!Hispanic or Latino (of any race)")
+
+cen2016 <- cen2016 %>%
+  mutate(across(c(pop_total, pop_white, pop_black, pop_hispanic), 
+                ~as.numeric(gsub(",", "", .))))
+
+cen2016 <- cen2016 %>%
+  mutate(p_white = round((pop_white/pop_total)*100, digits =2),
+         p_hispanic = round((pop_hispanic/pop_total)*100, digits =2),
+         p_black = round((pop_black/pop_total)*100, digits =2))
+
+```
+
+```{r Clean 2020 Census Data}
+# Clean census data by removing the percent and margin of error columns
+#names(cenpop2016) <- make.names(names(cenpop2016), unique = TRUE)
+pop2020 <- cenpop2020[, !duplicated(names(cenpop2020))]
+# Check duplicate columns
+#names(pop2016)[duplicated(names(pop2016))]
+
+# Now remove columns containing "Margin of Error" or "Percent"
+pop2020 <- pop2020 %>%
+  select(-contains(c('Percent', 'Margin of Error', "Margin.of.Error")))
+
+pop2020 <- pop2020[, !names(pop2020) %in% "Estimate!!RACE!!Total population"]
+
+# Clean column names
+pop2020 <- pop2020 %>%
+  rename_with(
+    ~ gsub("Estimate!!SEX AND AGE!!", "", .x),
+    starts_with("Estimate!!SEX AND AGE!!")) %>%
+  rename_with(
+    ~ gsub("Estimate!!RACE!!", "", .x),
+    starts_with("Estimate!!RACE!!"))
+
+pop2020 <- pop2020 %>%
+  mutate(Geography = str_remove(Geography, "0500000US"))
+
+pop2020$Geography <- as.numeric(sub("^0", "", as.character(pop2020$Geography)))
+
+pop2020 <- pop2020 %>%
+  rename("county_fips" = "Geography", "county_name" = "Geographic Area Name")
+
+cen2020 <- pop2020 %>%
+  select("county_fips", "county_name", "Total population", "Total population!!One race!!White", "Total population!!One race!!Black or African American", "Estimate!!HISPANIC OR LATINO AND RACE!!Total population!!Hispanic or Latino (of any race)")
+
+cen2020 <- cen2020 %>%
+  rename("pop_total" = "Total population", "pop_white" = "Total population!!One race!!White", "pop_black" = "Total population!!One race!!Black or African American", "pop_hispanic" = "Estimate!!HISPANIC OR LATINO AND RACE!!Total population!!Hispanic or Latino (of any race)")
+
+cen2020 <- cen2020 %>%
+  mutate(across(c(pop_total, pop_white, pop_black, pop_hispanic), 
+                ~as.numeric(gsub(",", "", .))))
+
+cen2020 <- cen2020 %>%
+  mutate(p_white = round((pop_white/pop_total)*100, digits =2),
+         p_hispanic = round((pop_hispanic/pop_total)*100, digits =2),
+         p_black = round((pop_black/pop_total)*100, digits =2))
+```
+
+```{r}
+cen2016 <- cen2016 %>%
+  separate(county_name, into = c("county_name", "state"), sep = ",", extra = "merge", fill = "right")
+cen2020 <- cen2020 %>%
+  separate(county_name, into = c("county_name", "state"), sep = ",", extra = "merge", fill = "right")
+
+cen2016$state <- toupper(cen2016$state)
+cen2020$state <- toupper(cen2020$state)
+
+```
+
+
+```{r Swing Population}
+swing_cen2016 <- cen2016 %>%
+  subset(trimws(state) %in% c("ARIZONA", "COLORADO", "FLORIDA", "GEORGIA", "IOWA", "MICHIGAN", "MINNESOTA", "NEVADA", "NEW HAMPSHIRE", "NORTH CAROLINA", "OHIO", "PENNSYLVANIA", "VIRGINIA", "WISCONSIN"))
+#unique(swing_election16$state)
+#length(unique(swing_election16$county_name))
+
+swing_cen2020 <- cen2020 %>%
+  subset(trimws(state) %in% c("ARIZONA", "COLORADO", "FLORIDA", "GEORGIA", "IOWA", "MICHIGAN", "MINNESOTA", "NEVADA", "NEW HAMPSHIRE", "NORTH CAROLINA", "OHIO", "PENNSYLVANIA", "VIRGINIA", "WISCONSIN"))
+```
+
+
+```{r County Level Election Returns}
+# County level election returns for 2000-2020 (source: Harvard Dataverse)
+# https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VOQCHQ
+elections <- read.csv("Harvard Dataverse/U.S. President County-Level Returns 2000-2020/countypres_2000-2020.csv")
+head(elections)
+```
+
+```{r}
+# Add column for percent votes for each candidate
+elections$votepercentage <- round((elections$candidatevotes / elections$totalvotes) * 100, digits = 2)
+head(elections)
+```
+
+```{r}
+# 2020 election returns data does not already total the number of votes for each candidate for ALL states (like 2016) --> have to sum across the different modes of voting to find the total number of votes for each candidate
+election20 <- elections %>%
+  filter(year == 2020) %>%
+  group_by(year, county_fips, candidate, state, state_po, county_name, office, party, totalvotes) %>%
+  summarise(
+    candidatevotes = sum(candidatevotes, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    mode = "CALC_TOTAL",
+    version = first(version),
+    votepercentage = candidatevotes / totalvotes * 100
+  ) %>%
+  arrange(state, county_fips)
+
+# Add column for percent votes for each candidate
+#election20$votepercentage <- round((election20$candidatevotes / election20$totalvotes) * 100, digits = 2)
+#head(election20)
+#check_result <- election20 %>%
+    #filter(county_fips == "51515")
+
+#print(check_result)
+# Parties include: DEMOCRAT, REPUBLICAN, LIBERTARIAN, GREEN
+```
+
+```{r 2016 & 2020 County Level Election Returns}
+# Group by election year
+election16 <- elections %>%
+  subset(year == 2016)
+# Remove observations where "mode" != "TOTAL"
+election16 <- election16 %>%
+  filter(mode == "TOTAL")
+head(election16)
+
+# Add column for percent votes for each candidate
+election16$votepercentage <- round((election16$candidatevotes / election16$totalvotes) * 100, digits = 2)
+head(election16)
+
+# Parties include: DEMOCRAT, REPUBLICAN, OTHER
+```
+
+```{r Swing State Election Returns}
+# Filter data to only include swing states
+swing_election16 <- election16 %>%
+  subset(state %in% c("ARIZONA", "COLORADO", "FLORIDA", "GEORGIA", "IOWA", "MICHIGAN", "MINNESOTA", "NEVADA", "NEW HAMPSHIRE", "NORTH CAROLINA", "OHIO", "PENNSYLVANIA", "VIRGINIA", "WISCONSIN"))
+#unique(swing_election16$state)
+#length(unique(swing_election16$county_name))
+
+swing_election20 <- election20 %>%
+  subset(state %in% c("ARIZONA", "COLORADO", "FLORIDA", "GEORGIA", "IOWA", "MICHIGAN", "MINNESOTA", "NEVADA", "NEW HAMPSHIRE", "NORTH CAROLINA", "OHIO", "PENNSYLVANIA", "VIRGINIA", "WISCONSIN"))
+#unique(swing_election20$state)
+#length(unique(swing_election20$county_name))
+```
+
+```{r Missing Counties Check}
+counties_2016 <- unique(swing_election16$county_fips)
+counties_2020 <- unique(swing_election20$county_fips)
+missing_counties <- setdiff(counties_2016, counties_2020)
+print(missing_counties)
+
+check_result <- elections %>%
+    filter(county_fips == "51515")
+print(check_result)
+# Bedford County, Virginia is mssing 2020 election returns data
+# Bedford County in 2016 is mising values --> drop it
+swing_election16 <- swing_election16[swing_election16$county_fips != "51515", ]
+  
+
+missing_counties_with_states <- swing_election16 %>%
+  filter(county_fips %in% missing_counties) %>%
+  select(state, county_fips) %>%
+  distinct() #%>%
+  #arrange(state, county_name)
+```
+
+
+```{r}
+#emp_2016 <- read.csv("~/Desktop/Columbia/Master's Thesis/Census Data/CBP2016.CB1600CBP_2024-10-21T122038/CBP2016.CB1600CBP-Data.csv")
+
+# Make row 1 the headers
+#new_headers <- as.character(emp_2016[1, ])
+#emp_2016 <- emp_2016[-1, ]
+#names(emp_2016) <- new_headers
+```
+
+```{r}
+#emp_2020 <- read.csv("~/Desktop/Columbia/Master's Thesis/Census Data/CBP2020.CB2000CBP_2024-10-21T122254/CBP2020.CB2000CBP-Data.csv")
+
+# Make row 1 the headers
+#new_headers <- as.character(emp_2020[1, ])
+#emp_2020 <- emp_2020[-1, ]
+#names(emp_2020) <- new_headers
+```
+
+```{r Education Data 2016}
+ed_2016 <- read.csv("~/Desktop/Columbia/Master's Thesis/Census Data/Education/ACSST5Y2016.S1501_2024-10-25T160259/ACSST5Y2016.S1501-Data.csv")
+
+# Make row 1 the headers
+new_headers <- as.character(ed_2016[1, ])
+ed_2016 <- ed_2016[-1, ]
+names(ed_2016) <- new_headers
+
+ed_2016 <- ed_2016 %>%
+  mutate(Geography = str_remove(Geography, "0500000US"))
+
+ed_2016$Geography <- as.numeric(sub("^0", "", as.character(ed_2016$Geography)))
+
+ed_2016 <- ed_2016 %>%
+  rename("county_fips" = "Geography", "county_name" = "Geographic Area Name")
+
+edu_2016 <- ed_2016 %>%
+  select("county_fips", "county_name","Total!!Estimate!!Population 25 years and over", "Total!!Estimate!!Population 25 years and over!!Associate's degree", "Total!!Estimate!!Population 25 years and over!!Bachelor's degree", "Total!!Estimate!!Population 25 years and over!!Graduate or professional degree")
+
+edu_2016 <- edu_2016 %>%
+  separate(county_name, into = c("county_name", "state"), sep = ",", extra = "merge", fill = "right")
+edu_2016$state <- toupper(edu_2016$state)
+edu_2016$state <- trimws(edu_2016$state)
+
+edu_2016 <- edu_2016 %>%
+  rename("edu_total25" = "Total!!Estimate!!Population 25 years and over",
+         "edu_associate" = "Total!!Estimate!!Population 25 years and over!!Associate's degree",
+         "edu_bachelor" = "Total!!Estimate!!Population 25 years and over!!Bachelor's degree",
+         "edu_graduate" = "Total!!Estimate!!Population 25 years and over!!Graduate or professional degree")
+
+edu_2016 <- edu_2016 %>%
+  mutate(across(
+    c(edu_total25, edu_associate, edu_bachelor, edu_graduate),
+    ~as.numeric(gsub(",", "", .))
+  ))
+
+edu_2016 <- edu_2016 %>%
+  mutate(p_associate = round((edu_associate / edu_total25) * 100, digits = 2),
+         p_bachelor = round((edu_bachelor / edu_total25) * 100, digits = 2),
+         p_graduate = round((edu_graduate / edu_total25) * 100, digits = 2),
+         p_degree = round(((edu_associate + edu_bachelor + edu_graduate) / edu_total25) * 100, digits = 2))
+```
+
+```{r Education Data 2020}
+ed_2020 <- read.csv("~/Desktop/Columbia/Master's Thesis/Census Data/Education/ACSST5Y2020.S1501_2024-10-25T160329/ACSST5Y2020.S1501-Data.csv")
+
+# Make row 1 the headers
+new_headers <- as.character(ed_2020[1, ])
+ed_2020 <- ed_2020[-1, ]
+names(ed_2020) <- new_headers
+
+ed_2020 <- ed_2020 %>%
+  mutate(Geography = str_remove(Geography, "0500000US"))
+
+ed_2020$Geography <- as.numeric(sub("^0", "", as.character(ed_2020$Geography)))
+
+ed_2020 <- ed_2020 %>%
+  rename("county_fips" = "Geography", "county_name" = "Geographic Area Name")
+
+edu_2020 <- ed_2020 %>%
+  select("county_fips", "county_name","Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over", "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Associate's degree", "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Bachelor's degree", "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Graduate or professional degree")
+
+edu_2020 <- edu_2020 %>%
+  separate(county_name, into = c("county_name", "state"), sep = ",", extra = "merge", fill = "right")
+edu_2020$state <- toupper(edu_2020$state)
+edu_2020$state <- trimws(edu_2020$state)
+
+edu_2020 <- edu_2020 %>%
+  rename("edu_total25" = "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over",
+         "edu_associate" = "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Associate's degree",
+         "edu_bachelor" = "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Bachelor's degree",
+         "edu_graduate" = "Estimate!!Total!!AGE BY EDUCATIONAL ATTAINMENT!!Population 25 years and over!!Graduate or professional degree")
+
+edu_2020 <- edu_2020 %>%
+  mutate(across(
+    c(edu_total25, edu_associate, edu_bachelor, edu_graduate),
+    ~as.numeric(gsub(",", "", .))
+  ))
+
+edu_2020 <- edu_2020 %>%
+  mutate(p_associate = round((edu_associate / edu_total25) * 100, digits = 2),
+         p_bachelor = round((edu_bachelor / edu_total25) * 100, digits = 2),
+         p_graduate = round((edu_graduate / edu_total25) * 100, digits = 2),
+         p_degree = round(((edu_associate + edu_bachelor + edu_graduate) / edu_total25) * 100, digits = 2))
+```
+
+```{r Swing State Education Data}
+
+# Filter data to only include swing states
+swing_edu_2016 <- edu_2016 %>%
+  subset(state %in% c("ARIZONA", "COLORADO", "FLORIDA", "GEORGIA", "IOWA", "MICHIGAN", "MINNESOTA", "NEVADA", "NEW HAMPSHIRE", "NORTH CAROLINA", "OHIO", "PENNSYLVANIA", "VIRGINIA", "WISCONSIN"))
+
+swing_edu_2020 <- edu_2020 %>%
+  subset(state %in% c("ARIZONA", "COLORADO", "FLORIDA", "GEORGIA", "IOWA", "MICHIGAN", "MINNESOTA", "NEVADA", "NEW HAMPSHIRE", "NORTH CAROLINA", "OHIO", "PENNSYLVANIA", "VIRGINIA", "WISCONSIN"))
+
+```
+
+
+```{r Employment Data 2016}
+# US Bureau of Labor Statistics: 3.7% of civilian labor force is 16-19 in 2013 and 3.2% in 2023
+# https://www.bls.gov/emp/tables/civilian-labor-force-summary.htm
+# Relevance to voting: While 16-17 year olds can't vote, their employment status might still be relevant as an indicator of local economic conditions that could influence voting patterns.
+# Consider sensitivity analysis: If possible, try to estimate how much your results might change if you could exclude the 16-17 year old data
+
+e_2016 <- read.csv("~/Desktop/Columbia/Master's Thesis/Census Data/Employment/1ACSST5Y2016.S2405_2024-10-21T143724/ACSST5Y2016.S2405-Data.csv")
+
+# Make row 1 the headers
+new_headers <- as.character(e_2016[1, ])
+e_2016 <- e_2016[-1, ]
+names(e_2016) <- new_headers
+
+e_2016 <- e_2016 %>%
+  mutate(Geography = str_remove(Geography, "0500000US"))
+
+e_2016$Geography <- as.numeric(sub("^0", "", as.character(e_2016$Geography)))
+
+e_2016 <- e_2016 %>%
+  rename("county_fips" = "Geography", "county_name" = "Geographic Area Name")
+
+emp_2016 <- e_2016 %>%
+  select("county_fips", "county_name", 
+         "Total!!Estimate!!Civilian employed population 16 years and over", 
+         "Total!!Estimate!!Manufacturing", "Total!!Estimate!!Construction", "Total!!Estimate!!Wholesale trade", 
+         "Total!!Estimate!!Retail trade", "Total!!Estimate!!Transportation and warehousing, and utilities", 
+         "Total!!Estimate!!Information", "Total!!Estimate!!Finance and insurance, and real estate and rental and leasing", 
+         "Total!!Estimate!!Professional, scientific, and management, and administrative and waste management services", 
+         "Total!!Estimate!!Educational services, and health care and social assistance", 
+         "Total!!Estimate!!Arts, entertainment, and recreation, and accommodation and food services", 
+         "Total!!Estimate!!Other services, except public administration", "Total!!Estimate!!Public administration", 
+         "Total!!Estimate!!Agriculture, forestry, fishing and hunting, and mining")
+
+emp_2016 <- emp_2016 %>%
+  rename("emp_total" = "Total!!Estimate!!Civilian employed population 16 years and over", 
+         "emp_manufacturing" = "Total!!Estimate!!Manufacturing",
+         "emp_construction" = "Total!!Estimate!!Construction", 
+         "emp_wholetrade" = "Total!!Estimate!!Wholesale trade", 
+         "emp_retailtrade" = "Total!!Estimate!!Retail trade", 
+         "emp_transportation" = "Total!!Estimate!!Transportation and warehousing, and utilities", 
+         "emp_information" = "Total!!Estimate!!Information", 
+         "emp_finance" = "Total!!Estimate!!Finance and insurance, and real estate and rental and leasing", 
+         "emp_professional" = "Total!!Estimate!!Professional, scientific, and management, and administrative and waste management services",
+         "emp_eduhealth" = "Total!!Estimate!!Educational services, and health care and social assistance",
+         "emp_arts" =  "Total!!Estimate!!Arts, entertainment, and recreation, and accommodation and food services",
+         "emp_other" = "Total!!Estimate!!Other services, except public administration",
+         "emp_pubadmin" = "Total!!Estimate!!Public administration", 
+         "emp_agriculture" = "Total!!Estimate!!Agriculture, forestry, fishing and hunting, and mining")
+
+# emp_other excludes public adminsitration
+
+emp_2016 <- emp_2016 %>%
+  separate(county_name, into = c("county_name", "state"), sep = ",", extra = "merge", fill = "right")
+emp_2016$state <- toupper(emp_2016$state)
+emp_2016$state <- trimws(emp_2016$state)
+
+# Make numeric
+emp_2016 <- emp_2016 %>%
+  mutate(across(
+    c(emp_total, emp_manufacturing, emp_construction, emp_wholetrade, emp_retailtrade,
+      emp_transportation, emp_information, emp_finance, emp_professional, emp_eduhealth,
+      emp_arts, emp_other, emp_pubadmin, emp_agriculture),
+    ~as.numeric(gsub(",", "", .))
+  ))
+
+# Calculate Percentages
+p_emp_2016 <- emp_2016 %>%
+  mutate(emp_total = emp_total, 
+         p_manufacturing = round((emp_manufacturing / emp_total) * 100, digits = 2),
+         p_construction = round((emp_construction / emp_total) * 100, digits = 2), 
+         p_wholetrade = round((emp_wholetrade / emp_total) * 100, digits = 2),
+         p_retailtrade = round((emp_retailtrade / emp_total) * 100, digits = 2),
+         p_transportation = round((emp_transportation / emp_total) * 100, digits = 2),
+         p_information = round((emp_information / emp_total) * 100, digits = 2),
+         p_finance = round((emp_finance / emp_total) * 100, digits = 2),
+         p_professional = round((emp_professional / emp_total) * 100, digits = 2),
+         p_eduhealth = round((emp_eduhealth / emp_total) * 100, digits = 2),
+         p_arts = round((emp_arts / emp_total) * 100, digits = 2),
+         p_other = round((emp_other / emp_total) * 100, digits = 2),
+         p_pubadmin = round((emp_pubadmin / emp_total) * 100, digits = 2),
+         p_agriculture = round((emp_agriculture / emp_total) * 100, digits = 2))
+
+# Goods producing industries (manufacturing, construction, agriculture, mining and logging)
+p_emp_2016 <- p_emp_2016 %>%
+  mutate(p_goods = p_manufacturing + p_construction + p_agriculture)
+```
+
+```{r Employment Data 2020}
+# US Bureau of Labor Statistics: 3.7% of civilian labor force is 16-19 in 2013 and 3.2% in 2023
+# https://www.bls.gov/emp/tables/civilian-labor-force-summary.htm
+# Relevance to voting: While 16-17 year olds can't vote, their employment status might still be relevant as an indicator of local economic conditions that could influence voting patterns.
+# Consider sensitivity analysis: If possible, try to estimate how much your results might change if you could exclude the 16-17 year old data
+
+e_2020 <- read.csv("~/Desktop/Columbia/Master's Thesis/Census Data/Employment/1ACSST5Y2020.S2403_2024-10-21T161751/ACSST5Y2020.S2403-Data.csv")
+
+# Make row 1 the headers
+new_headers <- as.character(e_2020[1, ])
+e_2020 <- e_2020[-1, ]
+names(e_2020) <- new_headers
+
+e_2020 <- e_2020 %>%
+  mutate(Geography = str_remove(Geography, "0500000US"))
+
+e_2020$Geography <- as.numeric(sub("^0", "", as.character(e_2020$Geography)))
+
+e_2020 <- e_2020 %>%
+  rename("county_fips" = "Geography", "county_name" = "Geographic Area Name")
+
+emp_2020 <- e_2020 %>%
+  select("county_fips", "county_name", "Estimate!!Total!!Civilian employed population 16 years and over", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Manufacturing", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Construction", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Wholesale trade", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Retail trade", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Transportation and warehousing, and utilities:", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Information", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Finance and insurance, and real estate and rental and leasing:", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Professional, scientific, and management, and administrative and waste management services:", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Educational services, and health care and social assistance:", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Arts, entertainment, and recreation, and accommodation and food services:", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Other services, except public administration", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Public administration", 
+         "Estimate!!Total!!Civilian employed population 16 years and over!!Agriculture, forestry, fishing and hunting, and mining:")
+
+emp_2020 <- emp_2020 %>%
+  rename("emp_total" = "Estimate!!Total!!Civilian employed population 16 years and over", 
+         "emp_manufacturing" = "Estimate!!Total!!Civilian employed population 16 years and over!!Manufacturing",
+         "emp_construction" = "Estimate!!Total!!Civilian employed population 16 years and over!!Construction", 
+         "emp_wholetrade" = "Estimate!!Total!!Civilian employed population 16 years and over!!Wholesale trade", 
+         "emp_retailtrade" = "Estimate!!Total!!Civilian employed population 16 years and over!!Retail trade", 
+         "emp_transportation" = "Estimate!!Total!!Civilian employed population 16 years and over!!Transportation and warehousing, and utilities:", 
+         "emp_information" = "Estimate!!Total!!Civilian employed population 16 years and over!!Information", 
+         "emp_finance" = "Estimate!!Total!!Civilian employed population 16 years and over!!Finance and insurance, and real estate and rental and leasing:", 
+         "emp_professional" = "Estimate!!Total!!Civilian employed population 16 years and over!!Professional, scientific, and management, and administrative and waste management services:",
+         "emp_eduhealth" = "Estimate!!Total!!Civilian employed population 16 years and over!!Educational services, and health care and social assistance:",
+         "emp_arts" =  "Estimate!!Total!!Civilian employed population 16 years and over!!Arts, entertainment, and recreation, and accommodation and food services:",
+         "emp_other" = "Estimate!!Total!!Civilian employed population 16 years and over!!Other services, except public administration",
+         "emp_pubadmin" = "Estimate!!Total!!Civilian employed population 16 years and over!!Public administration", 
+         "emp_agriculture" = "Estimate!!Total!!Civilian employed population 16 years and over!!Agriculture, forestry, fishing and hunting, and mining:")
+
+# emp_other excludes public administration
+
+emp_2020 <- emp_2020 %>%
+  separate(county_name, into = c("county_name", "state"), sep = ",", extra = "merge", fill = "right")
+emp_2020$state <- toupper(emp_2020$state)
+emp_2020$state <- trimws(emp_2020$state)
+
+# Make numeric
+emp_2020 <- emp_2020 %>%
+  mutate(across(
+    c(emp_total, emp_manufacturing, emp_construction, emp_wholetrade, emp_retailtrade,
+      emp_transportation, emp_information, emp_finance, emp_professional, emp_eduhealth,
+      emp_arts, emp_other, emp_pubadmin, emp_agriculture),
+    ~as.numeric(gsub(",", "", .))
+  ))
+
+# Calculate Percentages
+p_emp_2020 <- emp_2020 %>%
+  mutate(emp_total = emp_total, 
+         p_manufacturing = round((emp_manufacturing / emp_total) * 100, digits = 2),
+         p_construction = round((emp_construction / emp_total) * 100, digits = 2), 
+         p_wholetrade = round((emp_wholetrade / emp_total) * 100, digits = 2),
+         p_retailtrade = round((emp_retailtrade / emp_total) * 100, digits = 2),
+         p_transportation = round((emp_transportation / emp_total) * 100, digits = 2),
+         p_information = round((emp_information / emp_total) * 100, digits = 2),
+         p_finance = round((emp_finance / emp_total) * 100, digits = 2),
+         p_professional = round((emp_professional / emp_total) * 100, digits = 2),
+         p_eduhealth = round((emp_eduhealth / emp_total) * 100, digits = 2),
+         p_arts = round((emp_arts / emp_total) * 100, digits = 2),
+         p_other = round((emp_other / emp_total) * 100, digits = 2),
+         p_pubadmin = round((emp_pubadmin / emp_total) * 100, digits = 2),
+         p_agriculture = round((emp_agriculture / emp_total) * 100, digits = 2))
+
+# Goods producing industries (manufacturing, construction, agriculture, mining and logging)
+p_emp_2020 <- p_emp_2020 %>%
+  mutate(p_goods = p_manufacturing + p_construction + p_agriculture)
+```
+
+```{r Swing State Employment Data}
+
+# Filter data to only include swing states
+sp_emp_2016 <- p_emp_2016 %>%
+  subset(state %in% c("ARIZONA", "COLORADO", "FLORIDA", "GEORGIA", "IOWA", "MICHIGAN", "MINNESOTA", "NEVADA", "NEW HAMPSHIRE", "NORTH CAROLINA", "OHIO", "PENNSYLVANIA", "VIRGINIA", "WISCONSIN"))
+
+sp_emp_2020 <- p_emp_2020 %>%
+  subset(state %in% c("ARIZONA", "COLORADO", "FLORIDA", "GEORGIA", "IOWA", "MICHIGAN", "MINNESOTA", "NEVADA", "NEW HAMPSHIRE", "NORTH CAROLINA", "OHIO", "PENNSYLVANIA", "VIRGINIA", "WISCONSIN"))
+
+```
+
+
+```{r County Codes Swing States}
+dac2013 <- dac2013 %>%
+  rename("county_fips" = "FIPS")
+
+dac2013_swing <- dac2013 %>%
+  subset(State %in% c("AZ", "CO", "FL", "GA", "IA", "MI", "MN", "NV", "NH", "NC", "OH", "PA", "VA", "WI"))
+
+```
+
+```{r 2016 & 2020 Codes + Election Returns}
+# Join county codes with election returns data
+dac_election16 <- left_join(election16, dac2013, by = "county_fips", relationship = "many-to-many")
+dac_election16 <- dac_election16 %>% select(-c("State", "County_Name"))
+
+dac_election20 <- left_join(election20, dac2013, by = "county_fips", relationship = "many-to-many")
+dac_election20 <- dac_election20 %>% select(-c("State", "County_Name"))
+```
+
+```{r}
+cen2016$county_fips <- as.numeric(cen2016$county_fips)
+cen2020$county_fips <- as.numeric(cen2020$county_fips)
+
+SWT2016 <- left_join(election16, cen2016, by = "county_fips", relationship = "many-to-many")
+SWT2020 <- left_join(election20, cen2020, by = "county_fips", relationship = "many-to-many")
+```
+
+
+
+
+```{r SWING 2016 & 2020 Codes ELection Returns}
+# Join county codes with election returns data
+swing_election16 <- left_join(swing_election16, dac2013, by = "county_fips", relationship = "many-to-many")
+swing_election16 <- swing_election16 %>% select(-c("State", "County_Name"))
+
+swing_election20 <- left_join(swing_election20, dac2013, by = "county_fips", relationship = "many-to-many")
+swing_election20 <- swing_election20 %>% select(-c("State", "County_Name"))
+```
+
+```{r SWING 2016 & 2020 Election Returns + Census Data}
+swing_cen2016$county_fips <- as.numeric(swing_cen2016$county_fips)
+swing_cen2020$county_fips <- as.numeric(swing_cen2020$county_fips)
+
+T2016 <- left_join(swing_election16, swing_cen2016, by = "county_fips", relationship = "many-to-many")
+T2020 <- left_join(swing_election20, swing_cen2020, by = "county_fips", relationship = "many-to-many")
+
+#T2016 <- left_join(swing_election16, swing_cen2016, by = c("county_fips" = "county_fips"))
+#T2020 <- left_join(swing_election20, swing_cen2020, by = c("county_fips" = "county_fips"))
+
+```
+
+```{r SWING 2016 & 2020 Election Returns + Census Data + Employment + Education}
+complete_2016 <- left_join(T2016, sp_emp_2016, by = "county_fips", relationship = "many-to-many")
+complete_2020 <- left_join(T2020, sp_emp_2020, by = "county_fips", relationship = "many-to-many")
+
+complete_2016 <- left_join(complete_2016, swing_edu_2016, by = "county_fips", relationship = "many-to-many")
+complete_2020 <- left_join(complete_2020, swing_edu_2020, by = "county_fips", relationship = "many-to-many")
+```
+
+```{r Correlation Matrix 2016}
+selected_vars <- c("votepercentage", "RUCC_2013", "p_goods", "p_white", "p_hispanic", "p_black", "p_degree")
+
+# Create the correlation matrix
+cor_matrix <- cor(complete_2016[, selected_vars], use = "complete.obs")
+
+# Visualize the correlation matrix
+corrplot(cor_matrix, method = "color", tl.col = "black", col = RColorBrewer::brewer.pal(9, "Spectral"), addCoef.col = "black")
+```
+
+```{r Correlation Matrix 2020}
+selected_vars <- c("votepercentage", "RUCC_2013", "p_goods", "p_white", "p_hispanic", "p_black", "p_degree")
+
+# Create the correlation matrix
+cor_matrix <- cor(complete_2020[, selected_vars], use = "complete.obs")
+
+# Visualize the correlation matrix
+corrplot(cor_matrix, method = "color", tl.col = "black", col = RColorBrewer::brewer.pal(9, "Spectral"), addCoef.col = "black")
+```
+
+```{r Democrat Only Complete Data}
+Dswing_election16 <- complete_2016 %>%
+    filter(party == "DEMOCRAT")
+Dswing_election20 <- complete_2020 %>%
+    filter(party == "DEMOCRAT")
+```
+
+
+```{r 2016 Swing Regression}
+
+#Dswing_election16$pop_total <- as.numeric(Dswing_election16$pop_total)
+#Dswing_election16$pop_white <- as.numeric(Dswing_election16$pop_white)
+#Dswing_election16$pop_black <- as.numeric(Dswing_election16$pop_black)
+
+Dswing_election16$RUCC_2013 <- as.factor(Dswing_election16$RUCC_2013)
+model_DS16 <- lm(votepercentage ~ RUCC_2013 + pop_white + pop_black, data = Dswing_election16)
+summary(model_DS16)
+
+vif_val16 <- vif(model_DS16)
+print(vif_val16)
+```
+
+```{r 2020 Swing Regression}
+Dswing_election20 <- complete_2020 %>%
+    filter(party == "DEMOCRAT")
+
+#Dswing_election20$pop_total <- as.numeric(Dswing_election20$pop_total)
+#Dswing_election20$pop_white <- as.numeric(Dswing_election20$pop_white)
+#Dswing_election20$pop_black <- as.numeric(Dswing_election20$pop_black)
+
+Dswing_election20$RUCC_2013 <- as.factor(Dswing_election20$RUCC_2013)
+model_DS20 <- lm(votepercentage ~ RUCC_2013 + pop_white + pop_black, data = Dswing_election20)
+summary(model_DS20)
+
+vif_val20 <- vif(model_DS20)
+print(vif_val20)
+```
+
+```{r 2016 Votes}
+# 2016 total votes by candidate
+election16 %>%
+  filter(candidate == "DONALD TRUMP") %>%
+  summarise(total_votes = sum(candidatevotes, na.rm = TRUE)) %>%
+  {print(paste("Votes for Trump in 2016:", .$total_votes))}
+
+election16 %>%
+  filter(candidate == "HILLARY CLINTON") %>%
+  summarise(total_votes = sum(candidatevotes, na.rm = TRUE)) %>%
+  {print(paste("Votes for Clinton in 2016:", .$total_votes))}
+```
+
+```{r 2020 Votes}
+# 2020 total votes by candidate
+election20 %>%
+  filter(candidate == "DONALD J TRUMP") %>%
+  summarise(total_votes = sum(candidatevotes, na.rm = TRUE)) %>%
+  {print(paste("Votes for Trump in 2020:", .$total_votes))}
+
+election20 %>%
+  filter(candidate == "JOSEPH R BIDEN JR") %>%
+  summarise(total_votes = sum(candidatevotes, na.rm = TRUE)) %>%
+  {print(paste("Votes for Biden in 2020:", .$total_votes))}
+```
+
+```{r 2016 & 2020 Shapefiles}
+# Read in shapefiles
+# Source: https://www.census.gov/geographies/mapping-files/time-series/geo/tiger-line-file.html
+spa_2016 <- st_read("~/Desktop/Columbia/Master's Thesis/Election Geodata/tl_2016_us_county/tl_2016_us_county.shp")
+spa_2020 <- st_read("~/Desktop/Columbia/Master's Thesis/Election Geodata/tl_2020_us_county/tl_2020_us_county.shp")
+
+# Compare counties
+#list(Counties_2016 = spa_2016, Counties_2020 = spa_2020)
+
+# View shapefile
+#ggplot(data = spa_2016) +
+  #geom_sf(fill = "lightblue", color = "black") +
+  #labs(title = "2016 US County Map",
+       #x = "Longitude",
+       #y = "Latitude") +
+  #theme_minimal() +
+  #theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# With zoom
+#ggplot(data = spa_2016) +
+  #geom_sf(fill = "lightblue", color = "black") +
+  #labs(title = "2016 US County Map",
+       #x = "Longitude",
+       #y = "Latitude") +
+  #theme_minimal() +
+  #coord_sf(xlim = c(-130, -60), ylim = c(20, 50)) # Adjust limits for desired zoom area
+
+# Check CRS Information
+st_crs(spa_2016)
+# Name: NAD83 (North American Datum 1983)
+# Ellipsoid: GRS 1980
+# Units: Degrees
+# EPSG Code: 4269
+st_crs(spa_2020)
+# Name: NAD83 (North American Datum 1983)
+# Ellipsoid: GRS 1980
+# Units: Degrees
+# EPSG Code: 4269
+
+spa_2016 <- spa_2016 %>%
+  mutate(GEOID = str_remove(GEOID, "0500000US"))
+spa_2016$GEOID <- as.numeric(sub("^0", "", as.character(spa_2016$GEOID)))
+spa_2016 <- spa_2016 %>%
+  rename("county_fips" = "GEOID")
+
+spa_2020 <- spa_2020 %>%
+  mutate(GEOID = str_remove(GEOID, "0500000US"))
+spa_2020$GEOID <- as.numeric(sub("^0", "", as.character(spa_2020$GEOID)))
+spa_2020 <- spa_2020 %>%
+  rename("county_fips" = "GEOID")
+```
+
+```{r}
+swing_states <- c("04", "08", "12", "13", "19", "26", "27", "32", "33", "37", "39", "42", "51", "55")
+
+# Subset the shapefiles
+swing_spa_2016 <- spa_2016[spa_2016$STATEFP %in% swing_states, ]
+swing_spa_2020 <- spa_2020[spa_2020$STATEFP %in% swing_states, ]
+
+
+
+```
+
+```{r SWING 2016 Map of Goods Producing Industry Proportions}
+shape_map16 <- spa_2016 %>%
+  left_join(Dswing_election16, by = "county_fips")
+
+ggplot(data = shape_map16) +
+  geom_sf(aes(fill = p_goods), linewidth = 0.07) +
+  scale_fill_viridis_c(option = "C", name = "Proportion in Goods Producing Industries") +
+  theme_minimal() +
+  labs(title = "Proportion of Population Working in Goods-Producing Industries",
+       subtitle = "By County",
+       caption = "Source: Dswing Election 2020 Data") +
+  theme(legend.position = "bottom") +
+  coord_sf(xlim = c(-130, -60), ylim = c(20, 50)) # Adjust limits for desired zoom area
+```
+
+```{r SWING 2020 Map of Goods Producing Industry Proportions}
+shape_map20 <- spa_2020 %>%
+  left_join(Dswing_election16, by = "county_fips")
+
+ggplot(data = shape_map20) +
+  geom_sf(aes(fill = p_goods), linewidth = 0.07) +
+  scale_fill_viridis_c(option = "C", name = "Proportion in Goods Producing Industries") +
+  theme_minimal() +
+  labs(title = "Proportion of Population Working in Goods-Producing Industries",
+       subtitle = "By County",
+       #caption = "Source: Dswing Election 2020 Data"
+       ) +
+  theme(text = element_text(family = "Times New Roman"),
+        legend.position = "bottom") +
+  coord_sf(xlim = c(-130, -60), ylim = c(20, 50)) # Adjust limits for desired zoom area
+```
+
+```{r SWING 2016 Map of White-Black Proportions}
+shape_map16 <- spa_2016 %>%
+  left_join(Dswing_election16, by = "county_fips")
+
+ggplot(data = shape_map16) +
+  geom_sf(aes(fill = p_whiteblack), linewidth = 0.07) +
+  scale_fill_viridis_c(option = "C", name = "Difference in Proportions") +
+  theme_minimal() +
+  #scale_fill_gradient2(low = "royalblue", mid = "pink", high = "mediumorchid4", midpoint = 0) +
+  labs(title = "White & Black Population Differences",
+       subtitle = "By County",
+       #caption = "Source: Dswing Election 2020 Data"
+       ) +
+  theme(text = element_text(family = "Times New Roman"),
+        legend.position = "bottom") +
+  coord_sf(xlim = c(-130, -60), ylim = c(20, 50)) # Adjust limits for desired zoom area
+```
+
+```{r SWING 2020 Map of White-Black Proportions}
+shape_map20 <- spa_2020 %>%
+  left_join(Dswing_election20, by = "county_fips")
+
+ggplot(data = shape_map20) +
+  geom_sf(aes(fill = p_whiteblack), linewidth = 0.07) +
+  scale_fill_viridis_c(option = "C", name = "Difference in Proportions") +
+  theme_minimal() +
+  #scale_fill_gradient2(low = "royalblue", mid = "pink", high = "mediumorchid4", midpoint = 0) +
+  labs(title = "White & Black Population Differences",
+       subtitle = "By County",
+       caption = "Source: Dswing Election 2020 Data") +
+  theme(legend.position = "bottom") +
+  coord_sf(xlim = c(-130, -60), ylim = c(20, 50)) # Adjust limits for desired zoom area
+```
+
+```{r SWING 2016 Map of Education Proportions}
+shape_map16 <- spa_2016 %>%
+  left_join(Dswing_election20, by = "county_fips")
+
+ggplot(data = shape_map16) +
+  geom_sf(aes(fill = p_degree), linewidth = 0.07) +
+  scale_fill_viridis_c(option = "C", name = "Proportion of 25+ With a College Degree") +
+  theme_minimal() +
+  #scale_fill_gradient2(low = "royalblue", mid = "pink", high = "mediumorchid4", midpoint = 0) +
+  labs(title = "Education",
+       subtitle = "By County",
+       caption = "Source: Dswing Election 2020 Data") +
+  theme(legend.position = "bottom") +
+  coord_sf(xlim = c(-130, -60), ylim = c(20, 50)) # Adjust limits for desired zoom area
+```
+
+```{r SWING 2020 Map of Education Proportions}
+shape_map20 <- spa_2020 %>%
+  left_join(Dswing_election20, by = "county_fips")
+
+ggplot(data = shape_map20) +
+  geom_sf(aes(fill = p_degree), linewidth = 0.07) +
+  scale_fill_viridis_c(option = "C", name = "Proportion of 25+ With a College Degree") +
+  theme_minimal() +
+  #scale_fill_gradient2(low = "royalblue", mid = "pink", high = "mediumorchid4", midpoint = 0) +
+  labs(title = "Education",
+       subtitle = "By County",
+       caption = "Source: Dswing Election 2020 Data") +
+  theme(legend.position = "bottom") +
+  coord_sf(xlim = c(-130, -60), ylim = c(20, 50)) # Adjust limits for desired zoom area
+```
+
+```{r Shapefile Plot}
+ggplot(data = spa_2020) +
+  geom_sf(fill = "lightblue", color = "black") +
+  labs(title = "2020 US County Map",
+       x = "Longitude",
+       y = "Latitude") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r Shapefile Plot with Zoom on Continental U.S.}
+ggplot(data = spa_2016) +
+  geom_sf(fill = "lightblue", color = "black") +
+  labs(title = "2016 US County Map",
+       x = "Longitude",
+       y = "Latitude") +
+  theme_minimal() +
+  coord_sf(xlim = c(-130, -60), ylim = c(20, 50)) # Adjust limits for desired zoom area
+```
+
+```{r Shapefile Plot with Zoom Swing States}
+ggplot(data = swing_spa_2016) +
+  geom_sf(fill = "lightblue", color = "black") +
+  labs(title = "2016 US County Map",
+       x = "Longitude",
+       y = "Latitude") +
+  theme_minimal() +
+  coord_sf(xlim = c(-130, -60), ylim = c(20, 50)) # Adjust limits for desired zoom area
+```
+
+```{r Creating Spatial Weights (Swing)}
+# Create a neighbors list --> queen contiguity
+neighbors_2016 <- poly2nb(swing_spa_2016, queen = TRUE, snap = 0.01)
+neighbors_2020 <- poly2nb(swing_spa_2020, queen = TRUE, snap = 0.01)
+
+# Create spatial weights
+weights_2016 <- nb2listw(neighbors_2016, style = "W")
+weights_2020 <- nb2listw(neighbors_2020, style = "W") # style = 'W" creates row-standardized weights
+# zero.policy = TRUE # Allows empty
+```
+
+```{r Moran's Test Swing Vote Percentage}
+moran_test16 <- moran.test(Dswing_election16$votepercentage, weights_2016)
+print(moran_test16)
+
+moran_test20 <- moran.test(Dswing_election20$votepercentage, weights_2020)
+print(moran_test20)
+```
+
+```{r Moran's Plot Vote Percentage}
+Dswing_election16$lag <- lag.listw(weights_2016, Dswing_election16$votepercentage)
+M <- lm(lag ~ votepercentage, Dswing_election16)
+
+# Plot the data
+plot( lag ~ votepercentage, Dswing_election16, pch=21, asp=1, las=1, col = "grey40", bg="grey80")
+abline(M, col="blue") # Add the regression line from model M
+abline(v = mean(Dswing_election16$votepercentage), lty=3, col = "grey80")
+abline(h = mean(Dswing_election16$votepercentage), lty=3, col = "grey80")
+
+
+
+Dswing_election20$lag <- lag.listw(weights_2020, Dswing_election20$votepercentage)
+M <- lm(lag ~ votepercentage, Dswing_election20)
+
+# Plot the data
+plot( lag ~ votepercentage, Dswing_election20, pch=21, asp=1, las=1, col = "grey40", bg="grey80")
+abline(M, col="blue") # Add the regression line from model M
+abline(v = mean(Dswing_election20$votepercentage), lty=3, col = "grey80")
+abline(h = mean(Dswing_election20$votepercentage), lty=3, col = "grey80")
+```
+
+```{r Moran's Test Swing White Population}
+
+Rmoran_test16 <- moran.test(Dswing_election16$p_white, weights_2016)
+print(Rmoran_test16)
+
+Rmoran_test20 <- moran.test(Dswing_election20$p_white, weights_2020)
+print(Rmoran_test20)
+```
+
+```{r Moran's Plot White Population}
+Dswing_election16$lag <- lag.listw(weights_2016, Dswing_election16$pop_white)
+M <- lm(lag ~ pop_white, Dswing_election16)
+
+# Plot the data
+plot( lag ~ pop_white, Dswing_election16, pch=21, asp=1, las=1, col = "grey40", bg="grey80")
+abline(M, col="blue") # Add the regression line from model M
+abline(v = mean(Dswing_election16$pop_white), lty=3, col = "grey80")
+abline(h = mean(Dswing_election16$pop_white), lty=3, col = "grey80")
+
+
+
+Dswing_election20$lag <- lag.listw(weights_2020, Dswing_election20$pop_white)
+M <- lm(lag ~ pop_white, Dswing_election20)
+
+# Plot the data
+plot( lag ~ pop_white, Dswing_election20, pch=21, asp=1, las=1, col = "grey40", bg="grey80")
+abline(M, col="blue") # Add the regression line from model M
+abline(v = mean(Dswing_election20$pop_white), lty=3, col = "grey80")
+abline(h = mean(Dswing_election20$pop_white), lty=3, col = "grey80")
+```
+
+```{r Moran's Test Swing Black Population}
+
+Rmoran_test16 <- moran.test(Dswing_election16$p_black, weights_2016)
+print(Rmoran_test16)
+
+Rmoran_test20 <- moran.test(Dswing_election20$p_black, weights_2020)
+print(Rmoran_test20)
+```
+
+```{r Moran's Test Swing White/Black Population}
+# Combine p_white and p_black to address collinearity
+Dswing_election16 <- Dswing_election16 %>%
+  mutate(p_whiteblack = p_white - p_black) # the larger p_whiteblack, the higher the proportion of white people than black people
+
+Dswing_election20 <- Dswing_election20 %>%
+  mutate(p_whiteblack = p_white - p_black) # the larger p_whiteblack, the higher the proportion of white people than black people
+
+Rmoran_test16 <- moran.test(Dswing_election16$p_whiteblack, weights_2016)
+print(Rmoran_test16)
+
+Rmoran_test20 <- moran.test(Dswing_election20$p_whiteblack, weights_2020)
+print(Rmoran_test20)
+```
+
+```{r Moran's Test Swing Hispanic Population}
+
+Rmoran_test16 <- moran.test(Dswing_election16$p_hispanic, weights_2016)
+print(Rmoran_test16)
+
+Rmoran_test20 <- moran.test(Dswing_election20$p_hispanic, weights_2020)
+print(Rmoran_test20)
+```
+
+```{r Moran's Test Swing Goods Producing}
+
+Rmoran_test16 <- moran.test(Dswing_election16$p_goods, weights_2016)
+print(Rmoran_test16)
+
+Rmoran_test20 <- moran.test(Dswing_election20$p_goods, weights_2020)
+print(Rmoran_test20)
+```
+
+```{r Moran's Test Swing Goods Producing Centered}
+# Center p_goods and p_degree to adress collinearity
+mean_p_goods <- mean(Dswing_election16$p_goods, na.rm = TRUE)
+Dswing_election16$p_goods_centered <- Dswing_election16$p_goods - mean_p_goods
+# Center p_goods and p_degree to adress collinearity
+mean_p_goods <- mean(Dswing_election20$p_goods, na.rm = TRUE)
+Dswing_election20$p_goods_centered <- Dswing_election20$p_goods - mean_p_goods
+
+Rmoran_test16 <- moran.test(Dswing_election16$p_goods_centered, weights_2016)
+print(Rmoran_test16)
+
+Rmoran_test20 <- moran.test(Dswing_election20$p_goods_centered, weights_2020)
+print(Rmoran_test20)
+```
+
+```{r Moran's Test Swing College Degree}
+
+Rmoran_test16 <- moran.test(Dswing_election16$p_degree, weights_2016)
+print(Rmoran_test16)
+
+Rmoran_test20 <- moran.test(Dswing_election20$p_degree, weights_2020)
+print(Rmoran_test20)
+```
+
+```{r Moran's Test Swing College Degree Centered}
+# Center p_goods and p_degree to adress collinearity
+mean_p_degree <- mean(Dswing_election16$p_degree, na.rm = TRUE)
+Dswing_election16$p_degree_centered <- Dswing_election16$p_degree - mean_p_degree
+# Center p_goods and p_degree to adress collinearity
+mean_p_degree <- mean(Dswing_election20$p_degree, na.rm = TRUE)
+Dswing_election20$p_degree_centered <- Dswing_election20$p_degree - mean_p_degree
+
+Rmoran_test16 <- moran.test(Dswing_election16$p_degree_centered, weights_2016)
+print(Rmoran_test16)
+
+Rmoran_test20 <- moran.test(Dswing_election20$p_degree_centered, weights_2020)
+print(Rmoran_test20)
+```
+
+```{r}
+D_election16 <- SWT2016 %>%
+    filter(party == "DEMOCRAT")
+
+D_election20 <- SWT2020 %>%
+    filter(party == "DEMOCRAT")
+```
+
+```{r Basic Rural Regression 2016}
+# Assuming your data frame is called 'df' and the column is named 'RUCC_2013'
+#Dswing_election16$RUCC_2013 <- as.numeric(as.character(Dswing_election16$RUCC_2013))
+Dswing_election16$RUCC_2013 <- as.factor(Dswing_election16$RUCC_2013)
+rmodel_16 <- lm(votepercentage ~ RUCC_2013, data = Dswing_election16)
+summary(rmodel_16)
+```
+
+```{r Basic Rural Regression 2020}
+contrasts(Dswing_election20$RUCC_2013) <- contr.treatment(9)
+rmodel_20 <- lm(votepercentage ~ RUCC_2013, data = Dswing_election20)
+summary(rmodel_20)
+```
+
+```{r State Means}
+# Calculate state-level means
+state_means16 <- Dswing_election16 %>%
+  group_by(state.x) %>%
+  summarize(
+    p_whiteblack_state = mean(p_whiteblack),
+    p_hispanic_state = mean(p_hispanic),
+    p_goods_centered_state = mean(p_goods_centered),
+    p_degree_centered_state = mean(p_degree_centered)
+  )
+
+# Merge state means with original data
+Dswing_election16 <- merge(
+  Dswing_election16,
+  state_means16,
+  by = "state.x"
+)
+
+```
+
+
+```{r Multilevel Model 2016}
+# Combine p_white and p_black to address collinearity
+#Dswing_election16 <- Dswing_election16 %>%
+  #mutate(p_whiteblack = p_white - p_black) # the larger p_whiteblack, the higher the proportion of white people than black people
+
+# Center p_goods and p_degree to adress collinearity
+#mean_p_goods <- mean(Dswing_election16$p_goods, na.rm = TRUE)
+#mean_p_degree <- mean(Dswing_election16$p_degree, na.rm = TRUE)
+#Dswing_election16$p_goods_centered <- Dswing_election16$p_goods - mean_p_goods
+#Dswing_election16$p_degree_centered <- Dswing_election16$p_degree - mean_p_degree
+
+#Dswing_election16$RUCC_2013 <- factor(Dswing_election16$RUCC_2013, 
+                                      #levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9"),
+                                      #ordered = TRUE)
+Dswing_election16$RUCC_2013 <- as.factor(Dswing_election16$RUCC_2013)
+
+Dswing_election16$state.x <- as.factor(Dswing_election16$state.x)
+
+mlmodel_16 <- lmer(votepercentage ~ p_whiteblack + p_whiteblack_state + p_hispanic + p_hispanic_state + p_goods_centered + p_goods_centered_state + p_degree_centered + p_degree_centered_state + RUCC_2013 + (1 | state.x), data = Dswing_election16)
+summary(mlmodel_16)
+icc(mlmodel_16)
+#fixef(mlmodel_16)
+ranef(mlmodel_16)
+vif(mlmodel_16)
+model_performance(mlmodel_16)
+#VarCorr(mlmodel_16)
+```
+# For each percentage point that the white population exceeds the black population, the Democratic vote share is expected to decrease by about 0.39 percentage points.
+
+# For p_goods_centered: A county with 1 percentage point above average employment in goods-producing industries is associated with a 0.1891 percentage point lower Democratic vote share, assuming average goods-producing employment.
+#For p_degree_centered: A county with 1 percentage point above average college-educated population is associated with a 0.5706 percentage point higher Democratic vote share, assuming average education levels.
+
+# While the adjusted ICC only relates to the random effects, the unadjusted ICC also takes the fixed effects variances into account, more precisely, the fixed effects variance is added to the denominator of the formula to calculate the ICC (see Nakagawa et al. 2017)
+# The coefficient of determination R2 (that can be computed with r2()) quantifies the proportion of variance explained by a statistical model, but its definition in mixed model is complex (hence, different methods to compute a proxy exist). ICC is related to R2 because they are both ratios of variance components. More precisely, R2 is the proportion of the explained variance (of the full model), while the ICC is the proportion of explained variance that can be attributed to the random effects. In simple cases, the ICC corresponds to the difference between the conditional R2 and the marginal R2 
+
+```{r State Means 2020}
+# Calculate state-level means
+state_means20 <- Dswing_election20 %>%
+  group_by(state.x) %>%
+  summarize(
+    p_whiteblack_state = mean(p_whiteblack),
+    p_hispanic_state = mean(p_hispanic),
+    p_goods_centered_state = mean(p_goods_centered),
+    p_degree_centered_state = mean(p_degree_centered)
+  )
+
+# Merge state means with original data
+Dswing_election20 <- merge(
+  Dswing_election20,
+  state_means20,
+  by = "state.x"
+)
+
+```
+
+```{r Multilevel Model 2020}
+#Dswing_election20 <- Dswing_election20 %>%
+  #mutate(p_whiteblack = p_white - p_black) # the larger p_whiteblack, the higher the proportion of
+
+# Center p_goods and p_degree to adress collinearity
+#mean_p_goods <- mean(Dswing_election20$p_goods, na.rm = TRUE)
+#mean_p_degree <- mean(Dswing_election20$p_degree, na.rm = TRUE)
+#Dswing_election20$p_goods_centered <- Dswing_election20$p_goods - mean_p_goods
+#Dswing_election20$p_degree_centered <- Dswing_election20$p_degree - mean_p_degree
+
+#Dswing_election20$RUCC_2013 <- factor(Dswing_election20$RUCC_2013, 
+                                      #levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9"),
+                                     # ordered = TRUE)
+Dswing_election20$RUCC_2013 <- as.factor(Dswing_election20$RUCC_2013)
+
+Dswing_election20$state.x <- as.factor(Dswing_election20$state.x)
+mlmodel_20 <- lmer(votepercentage ~ p_whiteblack + p_whiteblack_state + p_hispanic + p_hispanic_state + p_goods_centered + p_goods_centered_state + p_degree_centered + p_degree_centered_state + RUCC_2013 + (1 | state.x), data = Dswing_election20)
+summary(mlmodel_20)
+icc(mlmodel_20)
+vif(mlmodel_20)
+model_performance(mlmodel_20)
+```
+
+```{r Final Regression Tables}
+tbl <- tbl_regression(mlmodel_16, 
+                      tidy_fun = broom.mixed::tidy,
+                      exponentiate = FALSE) %>%
+  modify_header(label = "**Variable**") %>%
+  modify_column_unhide(columns = c(estimate, std.error, df, statistic, p.value)) %>%
+  modify_header(
+    estimate ~ "**Estimate**",
+    std.error ~ "**Std. Error**",
+    df ~ "**df**",
+    statistic ~ "**t value**",
+    p.value ~ "**Pr(>|t|)**"
+  ) %>%
+  bold_labels() %>%
+  modify_caption("Table 1. Mixed-Effects Model Results") %>%
+  modify_fmt_fun(c(estimate, std.error, statistic) ~ function(x) style_number(x, digits = 3)) %>%
+  modify_fmt_fun(df ~ function(x) style_number(x, digits = 0)) %>%
+  modify_fmt_fun(p.value ~ function(x) style_pvalue(x, digits = 3))
+
+# Display the table in R
+tbl
+
+# Save as Word document with Times New Roman font
+doc <- tbl %>%
+  as_flex_table() %>%
+  font(fontname = "Times New Roman", part = "all") %>%
+  fontsize(size = 12, part = "all") %>%
+  bold(part = "header") %>%
+  set_table_properties(layout = "autofit") %>%
+  padding(padding = 2, part = "all")
+
+# Save the document
+save_as_docx(doc, path = "2016_model_results.docx")
+
+```
+
+
+
+```{r Vote 2016 Predictions Plotted by RUCC}
+# Assuming your model is called mlmodel_20
+Dswing_election16$predicted_votepercentage <- predict(mlmodel_16, newdata = Dswing_election16, re.form = NA)
+
+# Calculate mean predicted vote percentage for each RUCC level
+predictions <- aggregate(predicted_votepercentage ~ RUCC_2013, data = Dswing_election16, FUN = mean)
+
+ggplot(predictions, aes(x = RUCC_2013, y = predicted_votepercentage, group = 1)) +
+  geom_point(size = 3) +
+  geom_line() +
+  labs(title = "Predicted Vote Percentage by RUCC Levels",
+       x = "RUCC Levels (1=Urban, 9=Rural)",
+       y = "Predicted Vote Percentage") +
+  theme_minimal() +
+  scale_x_discrete(breaks = 1:9) +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
+
+```
+
+```{r Vote 2020 Predictions Plotted by RUCC}
+# Assuming your model is called mlmodel_20
+Dswing_election20$predicted_votepercentage <- predict(mlmodel_20, newdata = Dswing_election20, re.form = NA)
+
+# Calculate mean predicted vote percentage for each RUCC level
+predictions <- aggregate(predicted_votepercentage ~ RUCC_2013, data = Dswing_election20, FUN = mean)
+
+ggplot(predictions, aes(x = RUCC_2013, y = predicted_votepercentage, group = 1)) +
+  geom_point(size = 3) +
+  geom_line() +
+  labs(title = "Predicted Vote Percentage by RUCC Levels",
+       x = "RUCC Levels (1=Urban, 9=Rural)",
+       y = "Predicted Vote Percentage") +
+  theme_minimal() +
+  scale_x_discrete(breaks = 1:9) +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
+
+```
+
+### MAKE FOR ACTUAL VALUES
+
+```{r Vote 2016 & 2020 Predictions Plotted by RUCC}
+# Calculate predicted vote percentages for 2016
+Dswing_election16$predicted_votepercentage <- predict(mlmodel_16, newdata = Dswing_election16, re.form = NA)
+# Calculate mean predicted vote percentage for each RUCC level for 2016
+predictions_2016 <- aggregate(predicted_votepercentage ~ RUCC_2013, data = Dswing_election16, FUN = mean)
+predictions_2016$Year <- "2016"
+# Calculate predicted vote percentages for 2020
+Dswing_election20$predicted_votepercentage <- predict(mlmodel_20, newdata = Dswing_election20, re.form = NA)
+# Calculate mean predicted vote percentage for each RUCC level for 2020
+predictions_2020 <- aggregate(predicted_votepercentage ~ RUCC_2013, data = Dswing_election20, FUN = mean)
+predictions_2020$Year <- "2020"
+
+# Combine the data
+predictions_combined <- rbind(predictions_2016, predictions_2020)
+
+# Create the plot
+ggplot(predictions_combined, aes(x = factor(RUCC_2013), y = predicted_votepercentage, group = Year, color = Year)) +
+  geom_point(size = 3) +
+  geom_line() +
+  labs(title = "Predicted Vote Percentage by RUCC Levels for 2016 and 2020",
+       x = "RUCC Levels (1=Urban, 9=Rural)",
+       y = "Predicted Vote Percentage") +
+  theme_minimal() +
+  scale_color_manual(values = c("2016" = "red", "2020" = "blue")) +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
+```
+
+
+```{r 2016 & 2020 Combined}
+subset_Dswing2016 <- Dswing_election16 %>%
+  select("state.x", "county_name.x", "county_fips","pop_total", "candidate", "party", "votepercentage", "p_white", "p_hispanic", "p_black", "p_goods", "p_degree", "RUCC_2013", "p_whiteblack", "p_degree_centered", "p_goods_centered")
+
+subset_Dswing2016 <- subset_Dswing2016 %>%
+  rename("pop_total16" = "pop_total", 
+         "candidate16" = "candidate",
+         "votepercentage16" = "votepercentage",
+         "p_white16" = "p_white",
+         "p_wblack16" = "p_black",
+         "p_hispanic16" = "p_hispanic",
+         "p_goods16" = "p_goods",
+         "p_degree16" = "p_degree",
+         "p_whiteblack16" = "p_whiteblack",
+         "p_degree_centered16" = "p_degree_centered",
+         "p_goods_centered16" = "p_goods_centered")
+
+subset_Dswing2020 <- Dswing_election20 %>%
+  select("state.x", "county_name.x", "county_fips", "pop_total", "candidate", "party", "votepercentage", "p_white", "p_hispanic", "p_black", "p_goods", "p_degree", "RUCC_2013", "p_whiteblack", "p_degree_centered", "p_goods_centered")
+
+subset_Dswing2020 <- subset_Dswing2020 %>%
+  rename("pop_total20" = "pop_total",
+         "candidate20" = "candidate",
+         "votepercentage20" = "votepercentage",
+         "p_white20" = "p_white",
+         "p_wblack20" = "p_black",
+         "p_hispanic20" = "p_hispanic",
+         "p_goods20" = "p_goods",
+         "p_degree20" = "p_degree",
+         "p_whiteblack20" = "p_whiteblack",
+         "p_degree_centered20" = "p_degree_centered",
+         "p_goods_centered20" = "p_goods_centered")
+
+subset_Dswing1620 <- left_join(subset_Dswing2016, subset_Dswing2020, by = c("county_fips", "state.x", "county_name.x", "party", "RUCC_2013"), relationship = "many-to-many")
+```
+
+```{r SWING Map of White-Black Proportion Differences}
+shape_map1620 <- spa_2020 %>%
+  left_join(subset_Dswing1620, by = "county_fips")
+
+wbplot <- ggplot(data = shape_map1620) +
+  geom_sf(aes(fill = p_whiteblack16 - p_whiteblack20), linewidth = 0.07) +
+  scale_fill_viridis_c(option = "C", name = "Percentage Point Change in White-Black Population Difference") +
+  theme_minimal() +
+  #scale_fill_gradient2(low = "royalblue", mid = "pink", high = "mediumorchid4", midpoint = 0) +
+  labs(title = "Change in White-Black Population Proportion Difference, 2016-2020",
+       subtitle = "By County, Positive Values Indicate Narrowing Gap",
+       caption = "higher number indicates decreased population difference") +
+  theme(text = element_text(family = "Times New Roman"),
+        legend.position = "bottom") +
+  coord_sf(xlim = c(-130, -60), ylim = c(20, 50)) # Adjust limits for desired zoom area
+
+#ggsave("wbplot.png", plot = wbplot, width = 10, height = 8, units = "in", dpi = 300)
+
+# Positive values (warmer colors): Indicate that the difference between white and black population proportions decreased from 2016 to 2020. This means the gap between white and black populations narrowed.
+# Negative values (cooler colors): Indicate that the difference between white and black population proportions increased from 2016 to 2020. This means the gap between white and black populations widened.
+# Values close to zero: Indicate little change in the population difference between 2016 and 2020
+```
+
+```{r SWING Map of Education Proportion Differences}
+shape_map1620 <- spa_2020 %>%
+  left_join(subset_Dswing1620, by = "county_fips")
+
+dplot <- ggplot(data = shape_map1620) +
+  geom_sf(aes(fill = p_degree20 - p_degree16), linewidth = 0.07) +
+  scale_fill_viridis_c(option = "C", name = "Percentage Point Change in College-Educated Population") +
+  theme_minimal() +
+  #scale_fill_gradient2(low = "royalblue", mid = "pink", high = "mediumorchid4", midpoint = 0) +
+  labs(title = "Change in Population with College Degrees, 2016-2020",
+       subtitle = "By County, Percentage of Residents 25+ with a College Degree",
+       caption = "") +
+  theme(text = element_text(family = "Times New Roman"),
+        legend.position = "bottom") +
+  coord_sf(xlim = c(-130, -60), ylim = c(20, 50)) # Adjust limits for desired zoom area
+
+ggsave("dplot.png", plot = dplot, width = 10, height = 8, units = "in", dpi = 300)
+
+
+# Positive values indicate an increase in the percentage of college-educated residents from 2016 to 2020.
+# Negative values indicate a decrease in the percentage of college-educated residents from 2016 to 2020.
+# Zero indicates no change in the percentage of college-educated residents.
+```
+
+```{r Significant Change in votepercentage from 2016 to 2020}
+# Arizona, Georgia, Michigan, Pennsylvania, Wisconsin
+subset_Dswing1620 <- subset_Dswing1620 %>%
+  mutate(vote_percentage_change = votepercentage20 - votepercentage16)
+
+# Calculate percentiles of the changes
+percentiles <- quantile(subset_Dswing1620$vote_percentage_change, 
+                        probs = c(0.05, 0.25, 0.5, 0.75, 0.95), 
+                        na.rm = TRUE)
+
+# Define thresholds for significant change (e.g., 5th and 95th percentiles)
+lower_threshold <- percentiles[1]  # 5th percentile
+upper_threshold <- percentiles[5]  # 95th percentile
+
+# Identify counties with significant changes
+significant_changes <- subset_Dswing1620 %>%
+  filter(vote_percentage_change < lower_threshold | vote_percentage_change > upper_threshold)
+
+# Display counties with significant changes
+print("Counties with significant vote percentage changes:")
+print(significant_changes %>% 
+        select(state.x, county_name.x, votepercentage16, votepercentage20, vote_percentage_change))
+```
+
+# Bottom 5% (Lower Threshold):
+#   These are counties that experienced the largest negative changes in Democratic vote share from 2016 to 2020.
+#   They represent areas where the Democratic party lost the most ground or the Republican party gained the most.
+#   The change in these counties was more extreme than 95% of all counties in the dataset.
+# Top 5% (Upper Threshold):
+#   These are counties that experienced the largest positive changes in Democratic vote share from 2016 to 2020.
+#   They represent areas where the Democratic party gained the most ground or the Republican party lost the most.
+#   The change in these counties was more extreme than 95% of all counties in the dataset.
+
+```{r County Flips}
+# Counties above 50% in 2016 but below 50% in 2020
+counties_above_50_below_50 <- subset_Dswing1620 %>%
+  filter(votepercentage16 > 50 & votepercentage20 < 50) %>%
+  filter(state.x %in% c("ARIZONA", "GEORGIA", "WISCONSIN", "PENNSYLVANIA", "MICHIGAN")) %>%
+  select(state.x, county_name.x, votepercentage16, votepercentage20, RUCC_2013, p_whiteblack16, p_whiteblack20, p_degree16, p_degree20) %>%
+  arrange(RUCC_2013)
+
+# Counties below 50% in 2016 but above 50% in 2020
+counties_below_50_above_50 <- subset_Dswing1620 %>%
+  filter(votepercentage16 < 50 & votepercentage20 > 50) %>%
+  filter(state.x %in% c("ARIZONA", "GEORGIA", "WISCONSIN", "PENNSYLVANIA", "MICHIGAN")) %>%
+  select(state.x, county_name.x, votepercentage16, votepercentage20, RUCC_2013, p_whiteblack16, p_whiteblack20, p_hispanic16, p_hispanic20, p_goods16, p_goods20, p_degree16, p_degree20) %>%
+  arrange(RUCC_2013)
+
+# Display results
+print("Counties above 50% in 2016 but below 50% in 2020:")
+print(counties_above_50_below_50)
+
+print("\nCounties below 50% in 2016 but above 50% in 2020:")
+print(counties_below_50_above_50)
+```
+
+```{r Largest Population Increase}
+# Calculate percentage population growth
+subset_Dswing1620 <- subset_Dswing1620 %>%
+  mutate(percentage_growth = ((pop_total20 - pop_total16) / pop_total16) * 100)
+
+# Identify the 5 counties with the largest percentage growth for each state
+largest_growth <- subset_Dswing1620 %>%
+  group_by(state.x) %>%
+  arrange(desc(percentage_growth)) %>%
+  slice_head(n = 5) %>%
+  ungroup()
+
+# Select and display the results
+results <- largest_growth %>%
+  select(state.x, county_name.x, pop_total16, pop_total20, percentage_growth) %>%
+  arrange(state.x, desc(percentage_growth))
+
+# Print the results
+print(results, n = Inf)
+```
+
+```{r}
+SUB_Dswing1620 <- subset_Dswing1620 %>%
+  subset(county_name.x %in% c("MONTGOMERY", "ALLEGHENY", "CUMBERLAND", "LACKAWANNA", "CAMBRIA", "ERIE", "NORTHHAMPTION", "DANE", "MILWAUKEE", "WAUKESHA", "LA CROSS", "BROWN", "DOOR", "SAUK", "WAYNE", "OAKLAND", "MACOMB", "WASHENTAW", "KENT", "SAGINAW", "LEELANAU", "WAKE", "MECKLENBURG", "UNION", "ROBESON", "HENDERSON", "NASH", "NEW HANOVER", "SCOTLAND", "GWINNETT", "HALL", "CLAYTON", "CHATHAM", "COLUMBIA", "PEACH", "MARICOPA", "PIMA", "PINAL", "CLARK", "WASHOE"))
+SUB_Dswing1620 <- SUB_Dswing1620 %>%
+  mutate(vote_percentage_change = votepercentage20 - votepercentage16)
+SUB_Dswing1620 %>%
+  select(state.x, county_name.x, vote_percentage_change, percentage_growth, RUCC_2013, p_white16, p_white20)
+  
+```
+
+
+
+```{r Creating Spatial Weights (CONTINENTAL)}
+# Create a neighbors list --> queen contiguity
+Cneighbors_2016 <- poly2nb(spa_2016, queen = TRUE, snap = 0.01)
+Cneighbors_2020 <- poly2nb(spa_2020, queen = TRUE, snap = 0.01)
+
+# Create spatial weights
+Cweights_2016 <- nb2listw(Cneighbors_2016, style = "W")
+Cweights_2020 <- nb2listw(Cneighbors_2020, style = "W") # style = 'W" creates row-standardized weights
+# zero.policy = TRUE # Allows empty
+```
+
+```{r}
+# Assuming 'vote_percentage' is your variable of interest
+#moran_test <- moran.test(swing_spa_2016$vote_percentage, weights_2016)
+Cmoran_test16 <- moran(D_election16$votepercentage, Cweights_2016, length(Cneighbors_2016), Szero(Cweights_2016))[1]
+print(Cmoran_test16)
+
+Cmoran_test20 <- moran(D_election20$votepercentage, Cweights_2020, length(Cneighbors_2020), Szero(Cweights_2020))[1]
+print(Cmoran_test20)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
